@@ -1956,23 +1956,38 @@ function getDb() {
 // ── LOAD ALL DATA ─────────────────────────────────────────────
 async function loadAllData() {
   const fs = getDb();
-  try {
-    const [libriSnap, utentiSnap, prenSnap, segnSnap, classiSnap, testiSnap] = await Promise.all([
-      fs.collection('libri').orderBy('created_at', 'desc').get(),
-      fs.collection('utenti').get(),
-      fs.collection('prenotazioni').orderBy('created_at', 'desc').get(),
-      fs.collection('segnalazioni').orderBy('created_at', 'desc').get(),
-      fs.collection('classi_sezioni').get(),
-      fs.collection('libri_testo').get()
-    ]);
-    DB.libri          = libriSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    DB.utenti         = utentiSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    DB.prenotazioni   = prenSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    DB.segnalazioni   = segnSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    DB.classi_sezioni = classiSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    DB.libri_testo    = testiSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  } catch(e) {
-    console.warn('loadAllData error:', e);
+  const isAdmin = AUTH.profile?.ruolo === 'admin';
+  const richieste = [
+    { key: 'libri',          query: fs.collection('libri').orderBy('created_at', 'desc') },
+    { key: 'utenti',         query: fs.collection('utenti') },
+    { key: 'prenotazioni',   query: fs.collection('prenotazioni').orderBy('created_at', 'desc') },
+    { key: 'classi_sezioni', query: fs.collection('classi_sezioni') },
+    { key: 'libri_testo',    query: fs.collection('libri_testo') }
+  ];
+  // Le segnalazioni sono leggibili solo dall'admin (dati privati degli
+  // studenti): le richiediamo solo per lui, per non generare un errore
+  // di permesso atteso (e inutile) per tutti gli altri utenti.
+  if (isAdmin) {
+    richieste.push({ key: 'segnalazioni', query: fs.collection('segnalazioni').orderBy('created_at', 'desc') });
+  }
+
+  const risultati = await Promise.allSettled(richieste.map(r => r.query.get()));
+  const collezioniFallite = [];
+
+  risultati.forEach((esito, i) => {
+    const key = richieste[i].key;
+    if (esito.status === 'fulfilled') {
+      DB[key] = esito.value.docs.map(d => ({ id: d.id, ...d.data() }));
+    } else {
+      collezioniFallite.push(key);
+      console.warn(`loadAllData: lettura di "${key}" fallita:`, esito.reason);
+      // Non azzeriamo DB[key]: meglio mantenere l'ultimo dato noto
+      // (es. quello caricato da loadPublicConfigData) che perderlo.
+    }
+  });
+
+  if (collezioniFallite.length > 0 && typeof showToast === 'function') {
+    showToast(`Impossibile leggere: ${collezioniFallite.join(', ')}. Controlla le regole di sicurezza Firestore.`, 'error', 7000);
   }
 }
 
